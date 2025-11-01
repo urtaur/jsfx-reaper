@@ -1,0 +1,119 @@
+desc:Lo-Fi Crusher URTAUR 
+author: David Lowenfels (adapted by URTAUR)
+version: 1.1
+about:
+  # Lo-Fi Crusher - Quantizer/Decimator
+  # Bit crushing and sample rate reduction with smooth control
+  # Based on David Lowenfels' algorithm
+
+slider1:freq=1000<100,10000,10>Frequency (Hz)
+slider2:bits=8<1,24,1>Bit Depth
+slider3:input_gain=0<-12,12,0.1>Input Gain (dB)
+slider4:output_gain=0<-12,12,0.1>Output Gain (dB)
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+// Initialize crusher state variables
+l_phasor = 0;
+l_last = 0;
+r_phasor = 0;
+r_last = 0;
+
+// Lo-Fi Crusher function
+function crusher(sample, freq_hz, bits, sr)
+instance(phasor, last)
+local(step, normfreq, output)
+(
+    normfreq = freq_hz / sr;
+    step = 1 / (2 ^ bits);
+    phasor = phasor + normfreq;
+    
+    phasor >= 1.0 ? (
+        phasor = phasor - 1.0;
+        last = step * floor(sample / step + 0.5); // quantize
+    );
+    
+    last; // sample and hold output
+);
+
+@slider
+// Calculate gains
+input_gain_linear = 10^(input_gain/20);
+output_gain_linear = 10^(output_gain/20);
+
+@sample
+// Apply input gain
+spl0 *= input_gain_linear;
+spl1 *= input_gain_linear;
+
+// Apply Lo-Fi Crusher to both channels
+spl0 = left_crusher.crusher(spl0, freq, bits, srate);
+spl1 = right_crusher.crusher(spl1, freq, bits, srate);
+
+// Apply output gain
+spl0 *= output_gain_linear;
+spl1 *= output_gain_linear;
+
+@gfx 400 200
+// Professional UI Design
+gfx_set(0.1, 0.1, 0.1, 1);
+gfx_rect(0, 0, gfx_w, gfx_h);
+
+// Header
+gfx_set(0.95, 0.3, 0.3, 1);
+gfx_x = 10;
+gfx_y = 15;
+gfx_drawstr("Lo-Fi Crusher URTAUR");
+
+// Parameters display
+gfx_set(1, 1, 1, 1);
+gfx_x = 10;
+gfx_y = 40;
+gfx_drawstr("Sample Rate: ");
+gfx_set(1, 0.8, 0, 1);
+gfx_drawnumber(freq, 0);
+gfx_drawstr(" Hz");
+
+gfx_set(1, 1, 1, 1);
+gfx_x = 10;
+gfx_y = 65;
+gfx_drawstr("Bit Depth: ");
+gfx_set(0.8, 1, 0.8, 1);
+gfx_drawnumber(bits, 0);
+gfx_drawstr(" bits");
+
+gfx_set(1, 1, 1, 1);
+gfx_x = 10;
+gfx_y = 90;
+gfx_drawstr("Input: ");
+gfx_set(0.4, 0.8, 1, 1);
+input_gain >= 0 ? gfx_drawstr("+") : gfx_drawstr("");
+gfx_drawnumber(input_gain, 1);
+gfx_drawstr(" dB");
+
+gfx_set(1, 1, 1, 1);
+gfx_x = 10;
+gfx_y = 115;
+gfx_drawstr("Output: ");
+gfx_set(0.4, 0.9, 0.4, 1);
+output_gain >= 0 ? gfx_drawstr("+") : gfx_drawstr("");
+gfx_drawnumber(output_gain, 1);
+gfx_drawstr(" dB");
+
+// Visual separator
+gfx_set(0.3, 0.3, 0.3, 1);
+gfx_line(0, 140, gfx_w, 140);
+
+// Algorithm info
+gfx_set(0.8, 0.8, 0.8, 1);
+gfx_x = 10;
+gfx_y = 160;
+gfx_drawstr("• Bit crushing + sample rate reduction");
+
+gfx_x = 10;
+gfx_y = 180;
+gfx_drawstr("• Based on David Lowenfels' algorithm");

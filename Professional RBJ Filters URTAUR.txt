@@ -1,0 +1,276 @@
+desc:Professional RBJ Filters URTAUR
+author: URTAUR and DEEPSEEK
+version: 1.1
+about:
+  # Professional RBJ Filters Collection
+  # 9 types of digital biquad filters based on Robert Bristow-Johnson design
+
+slider1:0<0,8,1{Low-Pass,High-Pass,Band-Pass (Skirt),Band-Pass (Peak),Notch,All-Pass,Peaking EQ,Low Shelf,High Shelf}>Filter Type
+slider2:1000<20,20000,1>Frequency (Hz)
+slider3:0.707<0.1,4,0.001>Q Factor
+slider4:0<-18,18,0.1>Filter Gain (dB)
+slider5:0<-24,24,0.1>Output Gain (dB)
+
+in_pin:Left Input
+in_pin:Right Input
+out_pin:Left Output
+out_pin:Right Output
+
+@init
+// Initialize filter state variables
+function init_filter_state()
+(
+  x0L = x1L = x2L = y0L = y1L = y2L = 0;
+  x0R = x1R = x2R = y0R = y1R = y2R = 0;
+);
+
+// Initialize coefficients
+b0 = b1 = b2 = a1 = a2 = 0;
+output_gain = 1;
+filter_gain = 0;
+filter_type = -1;
+last_freq = -1;
+last_q = -1;
+last_filter_gain = -1;
+
+// Initialize filter state
+init_filter_state();
+
+@slider
+// Get current parameters
+filter_type = slider1;
+freq = slider2;
+q_val = slider3;
+filter_gain = slider4;
+output_gain = 10^(slider5 / 20);
+
+// Only recalculate coefficients if parameters changed
+filter_type != last_filter_type || freq != last_freq || q_val != last_q || filter_gain != last_filter_gain ? (
+  // Calculate angular frequency
+  w0 = 2 * $pi * min(freq, 0.49 * srate) / srate;
+  sin_w0 = sin(w0);
+  cos_w0 = cos(w0);
+  
+  // Calculate alpha
+  alpha = sin_w0 / (2 * q_val);
+  
+  // Filter type switching
+  filter_type == 0 ? ( // Low-Pass Filter
+    b1 = 1 - cos_w0;
+    b0 = b2 = 0.5 * b1;
+    a0 = 1 + alpha;
+    a1 = -2 * cos_w0;
+    a2 = 1 - alpha;
+  ) : filter_type == 1 ? ( // High-Pass Filter
+    b1 = -1 - cos_w0;
+    b0 = b2 = -0.5 * b1;
+    a0 = 1 + alpha;
+    a1 = -2 * cos_w0;
+    a2 = 1 - alpha;
+  ) : filter_type == 2 ? ( // Band-Pass (Constant Skirt)
+    b0 = q_val * alpha;
+    b1 = 0;
+    b2 = -b0;
+    a0 = 1 + alpha;
+    a1 = -2 * cos_w0;
+    a2 = 1 - alpha;
+  ) : filter_type == 3 ? ( // Band-Pass (Constant Peak)
+    b0 = alpha;
+    b1 = 0;
+    b2 = -alpha;
+    a0 = 1 + alpha;
+    a1 = -2 * cos_w0;
+    a2 = 1 - alpha;
+  ) : filter_type == 4 ? ( // Notch Filter
+    b0 = 1;
+    b1 = -2 * cos_w0;
+    b2 = 1;
+    a0 = 1 + alpha;
+    a1 = -2 * cos_w0;
+    a2 = 1 - alpha;
+  ) : filter_type == 5 ? ( // All-Pass Filter
+    b0 = 1 - alpha;
+    b1 = -2 * cos_w0;
+    b2 = 1 + alpha;
+    a0 = 1 + alpha;
+    a1 = -2 * cos_w0;
+    a2 = 1 - alpha;
+  ) : filter_type == 6 ? ( // Peaking EQ
+    A = 10^(filter_gain / 40);
+    b0 = 1 + alpha * A;
+    b1 = -2 * cos_w0;
+    b2 = 1 - alpha * A;
+    a0 = 1 + alpha / A;
+    a1 = -2 * cos_w0;
+    a2 = 1 - alpha / A;
+  ) : filter_type == 7 ? ( // Low Shelf
+    A = 10^(filter_gain / 40);
+    sqrt_A = sqrt(A);
+    alpha_shelf = sin_w0 / 2 * sqrt((A + 1/A) * (1/0.75 - 1) + 2);
+    
+    b0 = A * ((A + 1) - (A - 1) * cos_w0 + 2 * sqrt_A * alpha_shelf);
+    b1 = 2 * A * ((A - 1) - (A + 1) * cos_w0);
+    b2 = A * ((A + 1) - (A - 1) * cos_w0 - 2 * sqrt_A * alpha_shelf);
+    a0 = (A + 1) + (A - 1) * cos_w0 + 2 * sqrt_A * alpha_shelf;
+    a1 = -2 * ((A - 1) + (A + 1) * cos_w0);
+    a2 = (A + 1) + (A - 1) * cos_w0 - 2 * sqrt_A * alpha_shelf;
+  ) : ( // High Shelf
+    A = 10^(filter_gain / 40);
+    sqrt_A = sqrt(A);
+    alpha_shelf = sin_w0 / 2 * sqrt((A + 1/A) * (1/0.75 - 1) + 2);
+    
+    b0 = A * ((A + 1) + (A - 1) * cos_w0 + 2 * sqrt_A * alpha_shelf);
+    b1 = -2 * A * ((A - 1) + (A + 1) * cos_w0);
+    b2 = A * ((A + 1) + (A - 1) * cos_w0 - 2 * sqrt_A * alpha_shelf);
+    a0 = (A + 1) - (A - 1) * cos_w0 + 2 * sqrt_A * alpha_shelf;
+    a1 = 2 * ((A - 1) - (A + 1) * cos_w0);
+    a2 = (A + 1) - (A - 1) * cos_w0 - 2 * sqrt_A * alpha_shelf;
+  );
+  
+  // Normalize coefficients
+  b0 /= a0;
+  b1 /= a0;
+  b2 /= a0;
+  a1 /= a0;
+  a2 /= a0;
+  
+  // Store current parameters
+  last_filter_type = filter_type;
+  last_freq = freq;
+  last_q = q_val;
+  last_filter_gain = filter_gain;
+);
+
+// Hide Filter Gain slider for non-EQ filters
+slider_show(slider4, filter_type == 6 || filter_type == 7 || filter_type == 8);
+
+@block
+// Reset filter state on playback start
+play_state > 0 && last_play_state == 0 ? (
+  init_filter_state();
+);
+last_play_state = play_state;
+
+@sample
+// Process left channel
+x2L = x1L;
+x1L = x0L;
+x0L = spl0;
+
+y2L = y1L;
+y1L = y0L;
+y0L = b0 * x0L + b1 * x1L + b2 * x2L - a1 * y1L - a2 * y2L;
+
+// Process right channel
+x2R = x1R;
+x1R = x0R;
+x0R = spl1;
+
+y2R = y1R;
+y1R = y0R;
+y0R = b0 * x0R + b1 * x1R + b2 * x2R - a1 * y1R - a2 * y2R;
+
+// Apply output gain
+spl0 = y0L * output_gain;
+spl1 = y0R * output_gain;
+
+@gfx 400 200
+// Professional UI Design
+gfx_set(0.1, 0.1, 0.1, 1);
+gfx_rect(0, 0, gfx_w, gfx_h);
+
+// Header - using desc value with brighter red
+gfx_set(0.95, 0.3, 0.3, 1); // Rojo más claro
+gfx_x = 10;
+gfx_y = 15;
+gfx_drawstr("Professional RBJ Filters URTAUR");
+
+// Filter type display - light blue
+gfx_set(1, 1, 1, 1);
+gfx_x = 10;
+gfx_y = 40;
+gfx_drawstr("Filter: ");
+
+gfx_set(0.4, 0.8, 1, 1); // Azul claro
+filter_type == 0 ? gfx_drawstr("LOW-PASS") :
+filter_type == 1 ? gfx_drawstr("HIGH-PASS") :
+filter_type == 2 ? gfx_drawstr("BAND-PASS (SKIRT)") :
+filter_type == 3 ? gfx_drawstr("BAND-PASS (PEAK)") :
+filter_type == 4 ? gfx_drawstr("NOTCH") :
+filter_type == 5 ? gfx_drawstr("ALL-PASS") :
+filter_type == 6 ? gfx_drawstr("PEAKING EQ") :
+filter_type == 7 ? gfx_drawstr("LOW SHELF") :
+gfx_drawstr("HIGH SHELF");
+
+// Parameters display
+gfx_set(1, 1, 1, 1);
+gfx_x = 10;
+gfx_y = 65;
+gfx_drawstr("Frequency: ");
+gfx_set(1, 0.8, 0, 1);
+gfx_drawnumber(freq, 0);
+gfx_drawstr(" Hz");
+
+gfx_set(1, 1, 1, 1);
+gfx_x = 10;
+gfx_y = 85;
+gfx_drawstr("Q Factor: ");
+gfx_set(0.8, 1, 0.8, 1);
+gfx_drawnumber(q_val, 3);
+
+// Show Filter Gain only for EQ types in display
+(filter_type == 6 || filter_type == 7 || filter_type == 8) ? (
+  gfx_set(1, 1, 1, 1);
+  gfx_x = 10;
+  gfx_y = 105;
+  gfx_drawstr("Filter Gain: ");
+  gfx_set(1, 0.6, 0.8, 1);
+  filter_gain >= 0 ? gfx_drawstr("+") : gfx_drawstr("");
+  gfx_drawnumber(filter_gain, 1);
+  gfx_drawstr(" dB");
+  
+  gfx_set(1, 1, 1, 1);
+  gfx_x = 10;
+  gfx_y = 125;
+  gfx_drawstr("Output: ");
+  gfx_set(0.4, 0.9, 0.4, 1); // Verde para output
+  slider5 >= 0 ? gfx_drawstr("+") : gfx_drawstr("");
+  gfx_drawnumber(slider5, 1);
+  gfx_drawstr(" dB");
+) : (
+  gfx_set(1, 1, 1, 1);
+  gfx_x = 10;
+  gfx_y = 105;
+  gfx_drawstr("Output: ");
+  gfx_set(0.4, 0.9, 0.4, 1); // Verde para output
+  slider5 >= 0 ? gfx_drawstr("+") : gfx_drawstr("");
+  gfx_drawnumber(slider5, 1);
+  gfx_drawstr(" dB");
+);
+
+// Visual separator
+gfx_set(0.3, 0.3, 0.3, 1);
+gfx_line(0, 150, gfx_w, 150);
+
+// Filter characteristics info
+gfx_set(0.8, 0.8, 0.8, 1);
+gfx_x = 10;
+gfx_y = 170;
+
+filter_type == 0 ? gfx_drawstr("• Passes low frequencies, attenuates highs") :
+filter_type == 1 ? gfx_drawstr("• Passes high frequencies, attenuates lows") :
+filter_type == 2 ? gfx_drawstr("• Passes band with constant skirt gain") :
+filter_type == 3 ? gfx_drawstr("• Passes band with constant peak gain") :
+filter_type == 4 ? gfx_drawstr("• Attenuates narrow frequency band") :
+filter_type == 5 ? gfx_drawstr("• Affects phase only, preserves magnitude") :
+filter_type == 6 ? gfx_drawstr("• Bell curve boost/cut at center frequency") :
+filter_type == 7 ? gfx_drawstr("• Boost/cut all frequencies below cutoff") :
+gfx_drawstr("• Boost/cut all frequencies above cutoff");
+
+gfx_x = 10;
+gfx_y = 190;
+(filter_type == 6 || filter_type == 7 || filter_type == 8) ? (
+  gfx_drawstr("• Uses Filter Gain for boost/cut control")
+) : (
+  gfx_drawstr("• Based on Robert Bristow-Johnson biquad design")
+);

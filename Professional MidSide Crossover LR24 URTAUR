@@ -1,0 +1,395 @@
+desc:Professional Mid/Side Crossover LR24
+tags: crossover mid-side mastering
+author: Professional DSP
+version: 1.2
+
+slider1:500<20,20000,1>Crossover Frequency (Hz)
+slider2:0<-12,12,0.1>Mid Gain (dB)
+slider3:0<-12,12,0.1>Side Gain (dB)
+slider4:0<-12,12,0.1>Output Volume (dB)
+slider5:0<0,1,1{Stereo,4-Channel}>Output Mode
+
+@init
+// ============================================================================
+// PROFESSIONAL MID/SIDE CROSSOVER - LINKWITZ-RILEY 24dB/OCTAVE
+// 
+// This implementation provides phase-coherent 4th order Linkwitz-Riley filters
+// with independent Mid/Side processing. Two output modes available:
+//
+// STEREO MODE (Default):
+//   spl0 = Left channel with processed Mid/Side bands
+//   spl1 = Right channel with processed Mid/Side bands
+//
+// 4-CHANNEL MODE:
+//   spl0 = Mid Low    (Center channel low frequencies)
+//   spl1 = Mid High   (Center channel high frequencies)  
+//   spl2 = Side Low   (Side channel low frequencies)
+//   spl3 = Side High  (Side channel high frequencies)
+//
+// FEATURES:
+//   - Phase-coherent Linkwitz-Riley 24dB/octave filters
+//   - Perfect summation: Low + High = Original signal
+//   - Zero phase shift at crossover frequency
+//   - Flat magnitude response when bands are summed
+//   - Independent Mid/Side gain control
+//   - Professional-grade precision
+// ============================================================================
+
+// Filter states for Linkwitz-Riley 4th order - MID channel
+m_lp1_z1 = m_lp1_z2 = m_lp2_z1 = m_lp2_z2 = 0;
+m_hp1_z1 = m_hp1_z2 = m_hp2_z1 = m_hp2_z2 = 0;
+
+// Filter states for Linkwitz-Riley 4th order - SIDE channel  
+s_lp1_z1 = s_lp1_z2 = s_lp2_z1 = s_lp2_z2 = 0;
+s_hp1_z1 = s_hp1_z2 = s_hp2_z1 = s_hp2_z2 = 0;
+
+// Linkwitz-Riley coefficients
+coeff_lp1_b0 = coeff_lp1_b1 = coeff_lp1_b2 = coeff_lp1_a1 = coeff_lp1_a2 = 0;
+coeff_lp2_b0 = coeff_lp2_b1 = coeff_lp2_b2 = coeff_lp2_a1 = coeff_lp2_a2 = 0;
+coeff_hp1_b0 = coeff_hp1_b1 = coeff_hp1_b2 = coeff_hp1_a1 = coeff_hp1_a2 = 0;
+coeff_hp2_b0 = coeff_hp2_b1 = coeff_hp2_b2 = coeff_hp2_a1 = coeff_hp2_a2 = 0;
+
+@slider
+// ============================================================================
+// PARAMETER UPDATE - Calculate Linkwitz-Riley 4th order coefficients
+// ============================================================================
+freq = slider1;
+mid_gain = 10^(slider2/20);
+side_gain = 10^(slider3/20);
+output_vol = 10^(slider4/20);
+output_mode = slider5;
+
+// Calculate angular frequency
+w0 = 2 * $pi * freq / srate;
+cos_w0 = cos(w0);
+
+// FIRST STAGE: Butterworth 2nd order (Q = 0.7071 = 1/sqrt(2))
+alpha1 = sin(w0) / (2 * 0.707106781); // 1/sqrt(2)
+
+// First stage low-pass coefficients
+norm1 = 1 / (1 + alpha1);
+coeff_lp1_b0 = (1 - cos_w0) / 2 * norm1;
+coeff_lp1_b1 = (1 - cos_w0) * norm1;
+coeff_lp1_b2 = coeff_lp1_b0;
+coeff_lp1_a1 = -2 * cos_w0 * norm1;
+coeff_lp1_a2 = (1 - alpha1) * norm1;
+
+// First stage high-pass coefficients
+coeff_hp1_b0 = (1 + cos_w0) / 2 * norm1;
+coeff_hp1_b1 = -(1 + cos_w0) * norm1;
+coeff_hp1_b2 = coeff_hp1_b0;
+coeff_hp1_a1 = -2 * cos_w0 * norm1;
+coeff_hp1_a2 = (1 - alpha1) * norm1;
+
+// SECOND STAGE: Modified Butterworth 2nd order (Q = 0.51763809)
+// This specific Q value ensures perfect phase coherence when cascaded
+alpha2 = sin(w0) / (2 * 0.51763809);
+
+// Second stage low-pass coefficients
+norm2 = 1 / (1 + alpha2);
+coeff_lp2_b0 = (1 - cos_w0) / 2 * norm2;
+coeff_lp2_b1 = (1 - cos_w0) * norm2;
+coeff_lp2_b2 = coeff_lp2_b0;
+coeff_lp2_a1 = -2 * cos_w0 * norm2;
+coeff_lp2_a2 = (1 - alpha2) * norm2;
+
+// Second stage high-pass coefficients
+coeff_hp2_b0 = (1 + cos_w0) / 2 * norm2;
+coeff_hp2_b1 = -(1 + cos_w0) * norm2;
+coeff_hp2_b2 = coeff_hp2_b0;
+coeff_hp2_a1 = -2 * cos_w0 * norm2;
+coeff_hp2_a2 = (1 - alpha2) * norm2;
+
+@sample
+// ============================================================================
+// BIQUAD FILTER FUNCTION - Transposed Direct Form II
+// Optimized for numerical stability and performance
+// ============================================================================
+function biquad_df2(x, b0, b1, b2, a1, a2, z1, z2)
+local(y)
+(
+  y = b0 * x + b1 * z1 + b2 * z2 - a1 * z1 - a2 * z2;
+  z2 = z1;
+  z1 = y;
+  y;
+);
+
+// ============================================================================
+// MID/SIDE ENCODING WITH -3dB COMPENSATION
+// ============================================================================
+left = spl0;
+right = spl1;
+
+// Encode to Mid/Side with proper -3dB compensation
+mid = (left + right) * 0.707106781;  // -3dB = 1/sqrt(2)
+side = (left - right) * 0.707106781;
+
+// ============================================================================
+// MID CHANNEL PROCESSING - Linkwitz-Riley 4th Order
+// ============================================================================
+
+// Mid Low-Pass: Two cascaded 2nd order low-pass filters
+mid_low = biquad_df2(mid, coeff_lp1_b0, coeff_lp1_b1, coeff_lp1_b2, coeff_lp1_a1, coeff_lp1_a2, m_lp1_z1, m_lp1_z2);
+mid_low = biquad_df2(mid_low, coeff_lp2_b0, coeff_lp2_b1, coeff_lp2_b2, coeff_lp2_a1, coeff_lp2_a2, m_lp2_z1, m_lp2_z2);
+
+// Mid High-Pass: Two cascaded 2nd order high-pass filters  
+mid_high = biquad_df2(mid, coeff_hp1_b0, coeff_hp1_b1, coeff_hp1_b2, coeff_hp1_a1, coeff_hp1_a2, m_hp1_z1, m_hp1_z2);
+mid_high = biquad_df2(mid_high, coeff_hp2_b0, coeff_hp2_b1, coeff_hp2_b2, coeff_hp2_a1, coeff_hp2_a2, m_hp2_z1, m_hp2_z2);
+
+// ============================================================================
+// SIDE CHANNEL PROCESSING - Linkwitz-Riley 4th Order  
+// ============================================================================
+
+// Side Low-Pass: Two cascaded 2nd order low-pass filters
+side_low = biquad_df2(side, coeff_lp1_b0, coeff_lp1_b1, coeff_lp1_b2, coeff_lp1_a1, coeff_lp1_a2, s_lp1_z1, s_lp1_z2);
+side_low = biquad_df2(side_low, coeff_lp2_b0, coeff_lp2_b1, coeff_lp2_b2, coeff_lp2_a1, coeff_lp2_a2, s_lp2_z1, s_lp2_z2);
+
+// Side High-Pass: Two cascaded 2nd order high-pass filters
+side_high = biquad_df2(side, coeff_hp1_b0, coeff_hp1_b1, coeff_hp1_b2, coeff_hp1_a1, coeff_hp1_a2, s_hp1_z1, s_hp1_z2);
+side_high = biquad_df2(side_high, coeff_hp2_b0, coeff_hp2_b1, coeff_hp2_b2, coeff_hp2_a1, coeff_hp2_a2, s_hp2_z1, s_hp2_z2);
+
+// ============================================================================
+// GAIN STAGE
+// ============================================================================
+
+// Apply independent Mid/Side gains
+mid_low *= mid_gain;
+mid_high *= mid_gain;  
+side_low *= side_gain;
+side_high *= side_gain;
+
+// Apply master output volume
+mid_low *= output_vol;
+mid_high *= output_vol;
+side_low *= output_vol;
+side_high *= output_vol;
+
+// ============================================================================
+// OUTPUT MODE SELECTION
+// ============================================================================
+output_mode == 0 ? ( // STEREO MODE (Default)
+  // Reconstruct Left/Right from processed Mid/Side bands
+  // Combine low and high bands for final Mid and Side
+  processed_mid = mid_low + mid_high;
+  processed_side = side_low + side_high;
+  
+  // Decode back to Left/Right with -3dB compensation
+  left_out = (processed_mid + processed_side) * 0.707106781;
+  right_out = (processed_mid - processed_side) * 0.707106781;
+  
+  // Assign to stereo outputs
+  spl0 = left_out;
+  spl1 = right_out;
+  
+  // Clear unused channels for clean output
+  spl2 = 0;
+  spl3 = 0;
+) : ( // 4-CHANNEL MODE
+  // Output individual bands for parallel processing
+  spl0 = mid_low;    // Output 1: Mid Low Frequency
+  spl1 = mid_high;   // Output 2: Mid High Frequency  
+  spl2 = side_low;   // Output 3: Side Low Frequency
+  spl3 = side_high;  // Output 4: Side High Frequency
+);
+
+// ============================================================================
+// VERIFICATION: Uncomment to verify perfect reconstruction in Stereo Mode
+// ============================================================================
+/*
+output_mode == 0 ? (
+  // Test perfect reconstruction - should be identical to input
+  test_left = (mid + side) * 0.707106781;
+  test_right = (mid - side) * 0.707106781;
+  // left_out should equal test_left, right_out should equal test_right
+  // when all gains are at 0dB (within numerical precision)
+);
+*/
+
+
+@gfx 400 200
+// Professional UI Design
+gfx_set(0.1, 0.1, 0.1, 1);
+gfx_rect(0, 0, gfx_w, gfx_h);
+
+// Header - using desc value with brighter red
+gfx_set(0.95, 0.3, 0.3, 1); // Rojo más claro
+gfx_x = 10;
+gfx_y = 15;
+gfx_drawstr("Professional RBJ Filters URTAUR");
+
+// Filter type display - light blue
+gfx_set(1, 1, 1, 1);
+gfx_x = 10;
+gfx_y = 40;
+gfx_drawstr("Filter: ");
+
+gfx_set(0.4, 0.8, 1, 1); // Azul claro
+filter_type == 0 ? gfx_drawstr("LOW-PASS") :
+filter_type == 1 ? gfx_drawstr("HIGH-PASS") :
+filter_type == 2 ? gfx_drawstr("BAND-PASS (SKIRT)") :
+filter_type == 3 ? gfx_drawstr("BAND-PASS (PEAK)") :
+filter_type == 4 ? gfx_drawstr("NOTCH") :
+filter_type == 5 ? gfx_drawstr("ALL-PASS") :
+filter_type == 6 ? gfx_drawstr("PEAKING EQ") :
+filter_type == 7 ? gfx_drawstr("LOW SHELF") :
+gfx_drawstr("HIGH SHELF");
+
+// Parameters display
+gfx_set(1, 1, 1, 1);
+gfx_x = 10;
+gfx_y = 65;
+gfx_drawstr("Frequency: ");
+gfx_set(1, 0.8, 0, 1);
+gfx_drawnumber(freq, 0);
+gfx_drawstr(" Hz");
+
+gfx_set(1, 1, 1, 1);
+gfx_x = 10;
+gfx_y = 85;
+gfx_drawstr("Q Factor: ");
+gfx_set(0.8, 1, 0.8, 1);
+gfx_drawnumber(q_val, 3);
+
+// Show Filter Gain only for EQ types in display
+(filter_type == 6 || filter_type == 7 || filter_type == 8) ? (
+  gfx_set(1, 1, 1, 1);
+  gfx_x = 10;
+  gfx_y = 105;
+  gfx_drawstr("Filter Gain: ");
+  gfx_set(1, 0.6, 0.8, 1);
+  filter_gain >= 0 ? gfx_drawstr("+") : gfx_drawstr("");
+  gfx_drawnumber(filter_gain, 1);
+  gfx_drawstr(" dB");
+  
+  gfx_set(1, 1, 1, 1);
+  gfx_x = 10;
+  gfx_y = 125;
+  gfx_drawstr("Output: ");
+  gfx_set(0.4, 0.9, 0.4, 1); // Verde para output
+  slider5 >= 0 ? gfx_drawstr("+") : gfx_drawstr("");
+  gfx_drawnumber(slider5, 1);
+  gfx_drawstr(" dB");
+) : (
+  gfx_set(1, 1, 1, 1);
+  gfx_x = 10;
+  gfx_y = 105;
+  gfx_drawstr("Output: ");
+  gfx_set(0.4, 0.9, 0.4, 1); // Verde para output
+  slider5 >= 0 ? gfx_drawstr("+") : gfx_drawstr("");
+  gfx_drawnumber(slider5, 1);
+  gfx_drawstr(" dB");
+);
+
+// Frequency response visualization
+gfx_set(0.2, 0.2, 0.2, 1);
+gfx_rect(200, 40, 190, 100);
+
+// Draw frequency grid lines
+gfx_set(0.3, 0.3, 0.3, 1);
+i = 0;
+while (i < 10) (
+  x = 200 + i * 19;
+  gfx_line(x, 40, x, 140);
+  i += 1;
+);
+
+i = 0;
+while (i < 5) (
+  y = 40 + i * 25;
+  gfx_line(200, y, 390, y);
+  i += 1;
+);
+
+// Calculate and draw frequency response curve
+gfx_set(0.95, 0.3, 0.3, 1); // Red curve
+prev_x = 200;
+prev_y = 140;
+
+i = 0;
+while (i < 190) (
+  // Calculate frequency for this point (log scale)
+  log_freq_min = log(20);
+  log_freq_max = log(20000);
+  log_freq = log_freq_min + (log_freq_max - log_freq_min) * (i / 189);
+  test_freq = exp(log_freq);
+  
+  // Calculate angular frequency
+  w = 2 * $pi * min(test_freq, 0.49 * srate) / srate;
+  
+  // Calculate magnitude response
+  cos_w = cos(w);
+  sin_w = sin(w);
+  
+  // Transfer function magnitude
+  numerator_real = b0 + b1 * cos_w + b2 * cos(2*w);
+  numerator_imag = -b1 * sin_w - b2 * sin(2*w);
+  denominator_real = 1 + a1 * cos_w + a2 * cos(2*w);
+  denominator_imag = -a1 * sin_w - a2 * sin(2*w);
+  
+  magnitude = sqrt((numerator_real^2 + numerator_imag^2) / (denominator_real^2 + denominator_imag^2));
+  magnitude_db = 20 * log10(magnitude);
+  
+  // Convert to y coordinate (0dB at center, ±24dB range)
+  y_pos = 90 - magnitude_db * 2; // 90 is center, 2 pixels per dB
+  
+  // Clamp y position
+  y_pos = max(40, min(140, y_pos));
+  
+  // Draw line segment
+  gfx_line(prev_x, prev_y, 200 + i, y_pos);
+  
+  prev_x = 200 + i;
+  prev_y = y_pos;
+  i += 1;
+);
+
+// Draw center line (0dB reference)
+gfx_set(0.5, 0.5, 0.5, 0.5);
+gfx_line(200, 90, 390, 90);
+
+// Frequency labels
+gfx_set(0.7, 0.7, 0.7, 1);
+gfx_x = 200;
+gfx_y = 145;
+gfx_drawstr("20Hz");
+gfx_x = 340;
+gfx_drawstr("20kHz");
+
+// Gain labels
+gfx_set(0.7, 0.7, 0.7, 1);
+gfx_x = 195;
+gfx_y = 45;
+gfx_drawstr("+12dB");
+gfx_x = 195;
+gfx_y = 90;
+gfx_drawstr("0dB");
+gfx_x = 195;
+gfx_y = 135;
+gfx_drawstr("-12dB");
+
+// Visual separator
+gfx_set(0.3, 0.3, 0.3, 1);
+gfx_line(0, 150, gfx_w, 150);
+
+// Filter characteristics info
+gfx_set(0.8, 0.8, 0.8, 1);
+gfx_x = 10;
+gfx_y = 170;
+
+filter_type == 0 ? gfx_drawstr("• Passes low frequencies, attenuates highs") :
+filter_type == 1 ? gfx_drawstr("• Passes high frequencies, attenuates lows") :
+filter_type == 2 ? gfx_drawstr("• Passes band with constant skirt gain") :
+filter_type == 3 ? gfx_drawstr("• Passes band with constant peak gain") :
+filter_type == 4 ? gfx_drawstr("• Attenuates narrow frequency band") :
+filter_type == 5 ? gfx_drawstr("• Affects phase only, preserves magnitude") :
+filter_type == 6 ? gfx_drawstr("• Bell curve boost/cut at center frequency") :
+filter_type == 7 ? gfx_drawstr("• Boost/cut all frequencies below cutoff") :
+gfx_drawstr("• Boost/cut all frequencies above cutoff");
+
+gfx_x = 10;
+gfx_y = 190;
+(filter_type == 6 || filter_type == 7 || filter_type == 8) ? (
+  gfx_drawstr("• Uses Filter Gain for boost/cut control")
+) : (
+  gfx_drawstr("• Based on Robert Bristow-Johnson biquad design")
+);

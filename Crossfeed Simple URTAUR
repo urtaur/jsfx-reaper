@@ -1,0 +1,74 @@
+// Crossfeed Simple con Delay Opcional
+// Mezcla natural entre canales con retardo ajustable
+// Reduce fatiga auditiva en auriculares
+
+desc:Crossfeed Simple URTAUR
+tags: processing crossfeed binaural
+author: AI Assistant AND urtaur
+
+slider1:25<0,100,1>Crossfeed Amount (%)
+slider2:0<0,1,1{Off,On}>Delay Enable
+slider3:1<0,10,0.1>Delay (ms)
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+// Inicializar variables
+crossfeed_coef = 0.5;
+delay_enabled = 0;
+delay_samples = 0;
+
+@slider
+// Convertir porcentaje a coeficiente
+crossfeed_coef = slider1 / 100 * 0.7;
+
+// Solo habilitar delay si está activado
+delay_enabled = slider2;
+delay_samples = delay_enabled > 0 ? (slider3 * srate / 1000) | 0 : 0;
+
+// Calcular ganancia de compensación EXACTA
+// Cuando mezclas: output = input + (other_channel * coef * 0.7)
+// La ganancia máxima posible es: sqrt(1^2 + (coef*0.7)^2) por teorema de Pitágoras
+gain_comp = 1.0 / sqrt(1.0 + (crossfeed_coef * 0.7) * (crossfeed_coef * 0.7));
+
+// Inicializar buffer solo si se necesita delay
+delay_enabled > 0 ? (
+    buffer_size = 1024;
+    delay_buffer_left = 0;
+    delay_buffer_right = buffer_size;
+    buf_pos = 0;
+    memset(delay_buffer_left, 0, buffer_size * 2);
+);
+
+@sample
+// Leer muestras actuales
+in_left = spl0;
+in_right = spl1;
+
+// Procesar según si delay está habilitado
+delay_enabled > 0 ? (
+    // CON DELAY - Obtener muestras retardadas
+    read_pos = (buf_pos - delay_samples) & (buffer_size - 1);
+    delayed_right = delay_buffer_right[read_pos];
+    delayed_left = delay_buffer_left[read_pos];
+    
+    // Aplicar crossfeed con señales retardadas
+    cross_left = in_left + (delayed_right * crossfeed_coef * 0.7);
+    cross_right = in_right + (delayed_left * crossfeed_coef * 0.7);
+    
+    // Guardar muestras actuales en buffer
+    delay_buffer_left[buf_pos] = in_left;
+    delay_buffer_right[buf_pos] = in_right;
+    buf_pos = (buf_pos + 1) & (buffer_size - 1);
+) : (
+    // SIN DELAY - Crossfeed simple directo (mínimo CPU)
+    cross_left = in_left + (in_right * crossfeed_coef * 0.7);
+    cross_right = in_right + (in_left * crossfeed_coef * 0.7);
+);
+
+// Aplicar compensación EXACTA de ganancia
+spl0 = cross_left * gain_comp;
+spl1 = cross_right * gain_comp;
